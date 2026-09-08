@@ -1,0 +1,50 @@
+name: Build BREZEBASS Mac M1 VST3
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check uploads
+        run: |
+          for f in CMakeLists.txt Processor.cpp Editor.cpp CoreTests.cpp StateTests.cpp HostSmoke.cpp RoomScene.h Effects.h; do
+            test -f "$f" || { echo "Missing $f. Upload every file INSIDE BREZEBASS-GitHub to the repository root."; exit 1; }
+          done
+          test "$(uname -m)" = arm64
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+      - name: Build
+        run: cmake --build build --config Release --parallel 3
+      - name: DSP and state tests
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Verify and load the VST3
+        run: |
+          VST_PATH="$GITHUB_WORKSPACE/build/BrezeBass_artefacts/Release/VST3/BREZEBASS.vst3"
+          codesign --force --deep --sign - "$VST_PATH"
+          codesign --verify --deep --strict "$VST_PATH"
+          lipo "$VST_PATH/Contents/MacOS/BREZEBASS" -verify_arch arm64
+          ./build/brezebass_host_smoke_artefacts/Release/brezebass_host_smoke "$VST_PATH"
+      - name: Package
+        run: |
+          mkdir -p dist/BREZEBASS-Mac-M1
+          ditto build/BrezeBass_artefacts/Release/VST3/BREZEBASS.vst3 dist/BREZEBASS-Mac-M1/BREZEBASS.vst3
+          cp INSTALL-MAC.md LICENSE THIRD-PARTY-NOTICES.md dist/BREZEBASS-Mac-M1/
+          cp build/BREZEBASS-UI.png build/BREEZEBASS-SPLASH.png dist/BREZEBASS-Mac-M1/
+          ditto build/Factory-Presets dist/BREZEBASS-Mac-M1/Factory-Presets
+          cp build/_deps/juce-src/LICENSE.md dist/BREZEBASS-Mac-M1/JUCE-LICENSE.md
+          git archive --format=zip --output=dist/BREZEBASS-Mac-M1/Project-source.zip HEAD
+          tar -czf dist/BREZEBASS-Mac-M1/JUCE-8.0.6-source.tar.gz -C build/_deps juce-src
+          ./build/brezebass_core_tests --render dist/BREZEBASS-Mac-M1/Audio-preview.wav
+          ditto -c -k --sequesterRsrc --keepParent dist/BREZEBASS-Mac-M1 dist/BREZEBASS-Mac-M1.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BREZEBASS-Mac-M1-VST3
+          path: dist/BREZEBASS-Mac-M1.zip
+          if-no-files-found: error
+          retention-days: 30
